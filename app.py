@@ -10,6 +10,7 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import sys
 import warnings
+import os
 
 # Suppress warnings
 warnings.filterwarnings('ignore')
@@ -98,8 +99,18 @@ def load_scaler(scaler_path):
 
 # Try to load resources
 try:
-    model = load_model_with_fix("transformer_forecaster.h5")
-    scaler = load_scaler("scaler.pkl")
+    model_path = "transformer_forecaster.h5"
+    scaler_path = "scaler.pkl"
+    
+    if not os.path.exists(model_path):
+        st.error(f"Model file not found: {model_path}")
+        st.stop()
+    if not os.path.exists(scaler_path):
+        st.error(f"Scaler file not found: {scaler_path}")
+        st.stop()
+        
+    model = load_model_with_fix(model_path)
+    scaler = load_scaler(scaler_path)
     st.sidebar.success("✅ Model and scaler loaded successfully!")
 except Exception as e:
     st.error(f"❌ Initialization failed: {str(e)}")
@@ -345,8 +356,7 @@ st.sidebar.markdown("""
 """)
 st.sidebar.title("Troubleshooting")
 st.sidebar.markdown("""
-**Common Issues**:
-- Column name mismatch: App automatically handles original and cleaned names
-- Date format issues: Use YYYY-MM-DD format
-- Model loading errors: Verify TensorFlow version is 2.13.1
+**Dependency Conflicts Solved**:
+```txt
 
+mdurl==0.1.0
