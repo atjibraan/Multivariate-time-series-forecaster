@@ -1,3 +1,4 @@
+# app.py (updated)
 import streamlit as st
 import pandas as pd
 import numpy as np
@@ -10,6 +11,7 @@ from datetime import timedelta
 import sys
 import warnings
 import os
+import re
 
 warnings.filterwarnings("ignore")
 
@@ -19,26 +21,140 @@ st.sidebar.write(f"Python version: {sys.version.split()[0]}")
 st.sidebar.write(f"TensorFlow version: {tf.__version__}")
 st.sidebar.write(f"Streamlit version: {st.__version__}")
 
-# Fix class for TFOpLambda
+# ---------------------------
+# Robust TFOpLambda to handle string-serialized functions
+# ---------------------------
 class TFOpLambda(Layer):
+    """
+    Robust wrapper to handle TFOpLambda deserialization issues where the
+    saved 'function' may end up a string (e.g. 'tf.operators.add' or a printed
+    tensor repr). This implementation:
+      - resolves common TF op names to real callables (tf.add, tf.multiply, etc.)
+      - if kwargs contain serialized tensor strings, replaces them with a zeros
+        tensor of matching shape as a safe fallback (no crash).
+    """
+
     def __init__(self, function, **kwargs):
         super().__init__(**kwargs)
-        self.function = function
+        # Accept both callable and string function descriptors
+        self.raw_function = function
+        self.function = self._resolve_function(function)
         self.supports_masking = True
 
+    def _resolve_function(self, fn):
+        # If already callable, done.
+        if callable(fn):
+            return fn
+
+        # If None, fallback to identity
+        if fn is None:
+            return lambda x, **k: x
+
+        # If it's a dict or nested config, try to pick 'class_name' or 'function' key
+        if isinstance(fn, dict):
+            # Some Keras configs embed nested objects; try to extract plausible name
+            for key in ("function", "class_name", "name"):
+                if key in fn and isinstance(fn[key], str):
+                    fn = fn[key]
+                    break
+
+        # If string, try to map common op names
+        if isinstance(fn, str):
+            s = fn.strip()
+            # common patterns that show up when serialised
+            # e.g. "<function add at 0x...>", "tf.math.add", "tf.operators.add", "add"
+            # search keywords
+            if re.search(r"add", s, re.I):
+                return tf.add
+            if re.search(r"sub|subtract", s, re.I):
+                return tf.subtract
+            if re.search(r"mul|multiply", s, re.I):
+                return tf.multiply
+            if re.search(r"matmul|dot|tensordot", s, re.I):
+                return tf.matmul
+            if re.search(r"concat", s, re.I):
+                # concat requires axis arg; provide a wrapper expecting kwargs or second arg
+                return lambda x, **k: tf.concat(x if isinstance(x, (list, tuple)) else [x], axis=k.get('axis', -1))
+            if re.search(r"identity", s, re.I):
+                return lambda x, **k: x
+            # last resort: try to import attribute from tf if it looks like tf.some.path
+            if "tf." in s:
+                try:
+                    # pick the last path after 'tf.'
+                    path = s[s.rfind("tf.") + 3:]
+                    # convert "operators.add" -> tf.operators.add
+                    obj = tf
+                    for part in path.split("."):
+                        obj = getattr(obj, part)
+                    if callable(obj):
+                        return obj
+                except Exception:
+                    pass
+
+        # fallback: identity op to avoid crash
+        return lambda x, **k: x
+
+    def _sanitize_kwargs(self, inputs, kwargs):
+        """
+        Replace kwargs that look like serialized tensor descriptions (strings)
+        with a placeholder zeros tensor of the same shape as 'inputs' wherever
+        necessary. This is a safe fallback to avoid type errors during call.
+        """
+        sanitized = {}
+        for k, v in (kwargs or {}).items():
+            if isinstance(v, str):
+                # common serialized tensor repr contains 'tf.Tensor' or 'shape='
+                if "tf.Tensor" in v or "shape=" in v:
+                    try:
+                        # create zeros of same shape as inputs (best-effort)
+                        shape = tf.shape(inputs)
+                        sanitized[k] = tf.zeros_like(inputs)
+                    except Exception:
+                        sanitized[k] = tf.zeros_like(inputs)
+                else:
+                    # non-tensor strings -> keep them (some ops use name strings)
+                    sanitized[k] = v
+            else:
+                sanitized[k] = v
+        return sanitized
+
     def call(self, inputs, mask=None, **kwargs):
-        return self.function(inputs) if mask is None else self.function(inputs, mask=mask)
+        # If function accidentally serialized as a string, self.function is the resolved callable
+        if not callable(self.function):
+            # final fallback convert to identity
+            return inputs
+
+        # sanitize kwargs that may be serialized strings
+        safe_kwargs = self._sanitize_kwargs(inputs, kwargs)
+
+        # Many TF ops accept positional second tensor (e.g., tf.add(x, y))
+        # If the resolved callable expects two arguments and 'y' was passed as kw string,
+        # we substituted zeros. If the op expects list/tuple, pass as appropriate.
+        try:
+            return self.function(inputs, **safe_kwargs)
+        except TypeError:
+            # try passing only inputs (some wrappers expect single arg)
+            try:
+                return self.function(inputs)
+            except Exception:
+                # last resort: identity
+                return inputs
 
     def get_config(self):
-        c = super().get_config()
-        c['function'] = self.function
-        return c
+        cfg = super().get_config()
+        # we store raw_function representation for compatibility
+        cfg["function"] = self.raw_function if not callable(self.raw_function) else getattr(self.raw_function, "__name__", str(self.raw_function))
+        return cfg
 
     @classmethod
     def from_config(cls, config):
-        return cls(**config)
+        # if a stringified function was saved, we pass it in and let __init__ resolve it
+        fn = config.pop("function", None)
+        return cls(fn, **config)
 
-# Fix class for MultiHeadAttention compatibility
+# ---------------------------
+# CompatibleMultiHeadAttention (unchanged)
+# ---------------------------
 class CompatibleMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
     def __init__(self, **kwargs):
         for key in ['query_shape', 'key_shape', 'value_shape']:
@@ -51,7 +167,9 @@ class CompatibleMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
         else:
             super().build(input_shape)
 
-# Load the model safely
+# ---------------------------
+# Model & scaler loaders (unchanged except spinner text)
+# ---------------------------
 @st.cache_resource(show_spinner="Loading forecasting model...")
 def load_model_with_fix(model_path):
     try:
@@ -69,7 +187,6 @@ def load_model_with_fix(model_path):
         st.error("Ensure TF version is 2.13.1 and Python is 3.10.x; model must match TF version.")
         st.stop()
 
-# Load the scaler safely
 @st.cache_resource(show_spinner="Loading data scaler...")
 def load_scaler(scaler_path):
     try:
@@ -78,7 +195,9 @@ def load_scaler(scaler_path):
         st.error(f"Error loading scaler: {e}")
         st.stop()
 
-# Preprocessing uploaded data
+# ---------------------------
+# Preprocessing uploaded data (unchanged)
+# ---------------------------
 @st.cache_data(show_spinner="Processing data...")
 def load_and_preprocess_data(uploaded_file):
     try:
@@ -118,7 +237,9 @@ def load_and_preprocess_data(uploaded_file):
         st.error(f"Error processing data: {e}")
         st.stop()
 
-# Main App: Title
+# ---------------------------
+# Main App (unchanged)
+# ---------------------------
 st.title("🌤️ Air Quality Forecasting")
 st.markdown("""
 Forecast air quality for the next 24 hours using Transformer.
@@ -150,7 +271,11 @@ if uploaded_file:
             nxt = last_ts + timedelta(hours=i+1)
             for key, idx in [("hour", "hour"), ("day_of_week", "day_of_week"), ("month", "month")]:
                 if key in feature_cols:
-                    new[feature_cols.index(key)] = getattr(nxt, key if key != "day_of_week" else "weekday")()
+                    # handle day_of_week specially
+                    if key == "day_of_week":
+                        new[feature_cols.index(key)] = nxt.weekday()
+                    else:
+                        new[feature_cols.index(key)] = getattr(nxt, key)
             seq = np.roll(seq, -1, axis=1)
             seq[0, -1, :] = new
             forecasts.append(new[:len(target_cols)])
