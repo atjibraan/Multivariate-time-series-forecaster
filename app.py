@@ -25,22 +25,31 @@ def transformer_encoder(inputs, head_size, num_heads, ff_dim, dropout=0):
     y = Dropout(dropout)(y)
     return LayerNormalization(epsilon=1e-6)(x + y)
 
-# Define the data loading and preprocessing function from the original script
-@st.cache_data
-def load_and_preprocess_data(uploaded_file):
+# A modified function to load and preprocess data from different sources
+def process_data(data_source, source_type):
     """
-    Loads and preprocesses the air quality data from an Excel file.
+    Loads and preprocesses the air quality data from an Excel or CSV file, or a string.
     It performs cleaning, interpolation, and feature engineering.
     """
-    # Read the excel file, skipping the second row as per the original script
-    df = pd.read_excel(uploaded_file, header=0, skiprows=[1])
-    
+    df = None
+    if source_type == 'file':
+        if data_source.name.endswith('.xlsx'):
+            df = pd.read_excel(data_source, header=0, skiprows=[1])
+        elif data_source.name.endswith('.csv'):
+            df = pd.read_csv(data_source, header=0, skiprows=[1])
+    elif source_type == 'text':
+        df = pd.read_csv(io.StringIO(data_source), header=0, skiprows=[1])
+
+    if df is None:
+        st.error("Error: Could not read the provided data.")
+        return None, None, None
+
     # Clean up column names
     df.columns = [str(col).strip().replace(' ', '_') for col in df.columns]
-    
+
     # Replace -200 values with NaN
     df.replace(-200, np.nan, inplace=True)
-    
+
     # Combine Date and Time columns into a single timestamp
     df['Date'] = pd.to_datetime(df['Date'], errors='coerce')
     df = df.dropna(subset=['Date'])
@@ -76,23 +85,44 @@ def load_and_preprocess_data(uploaded_file):
 def main():
     st.title("Air Quality Forecasting App")
     st.write("This app uses a trained Transformer model to predict the next time step's air quality values based on historical data.")
-    st.write("Please upload your `AirQualityUCI.xlsx` file to get started.")
+    
+    input_type = st.radio(
+        "Choose your data input method:",
+        ('Upload File', 'Enter Data Manually')
+    )
 
-    # File uploader widget
-    uploaded_file = st.file_uploader("Choose a file", type="xlsx")
+    df = None
+    target_cols = None
+    feature_cols = None
 
-    if uploaded_file is not None:
+    if input_type == 'Upload File':
+        uploaded_file = st.file_uploader("Choose an Excel or CSV file", type=['xlsx', 'csv'])
+        if uploaded_file is not None:
+            df, target_cols, feature_cols = process_data(uploaded_file, 'file')
+    else: # Enter Data Manually
+        st.write("Please paste your data below. The first row should contain headers and the second row should be skipped.")
+        st.write("Example headers: `Date`, `Time`, `CO(GT)`, `PT08.S1(CO)`, etc.")
+        default_text = """Date;Time;CO(GT);PT08.S1(CO);NMHC(GT);C6H6(GT);PT08.S2(NMHC);NOx(GT);PT08.S3(NOx);NO2(GT);PT08.S4(NO2);PT08.S5(O3);T;RH;AH
+; ;  ;   ;   ;   ;   ;   ;   ;   ;   ;   ;  ;  ;  
+2004-03-10;18.00.00;2,6;1360;150;11,9;1046;166;1056;113;1692;1268;13,6;48,9;0,7578
+2004-03-10;19.00.00;2;1292;112;9,4;955;103;1174;92;1559;972;13,3;47,7;0,7255
+2004-03-10;20.00.00;2,2;1402;88;9,0;939;131;1140;114;1555;1074;11,9;54,0;0,7502
+2004-03-10;21.00.00;2,2;1376;80;9,2;948;172;1092;122;1588;1203;11,0;60,0;0,7867
+2004-03-10;22.00.00;1,5;1272;51;7,5;831;131;1129;116;1497;1110;11,2;59,6;0,7888
+"""
+        user_data = st.text_area("Paste your data here:", default_text)
+        if st.button("Process Data"):
+            df, target_cols, feature_cols = process_data(user_data, 'text')
+            
+    if df is not None:
         try:
-            # Load and preprocess the data
-            df, target_cols, feature_cols = load_and_preprocess_data(uploaded_file)
-            st.success("File uploaded and data preprocessed successfully!")
+            st.success("Data loaded and preprocessed successfully!")
             
             # Show a small preview of the data
             st.subheader("Data Preview")
             st.dataframe(df.head())
 
             # Load the pre-trained model and scaler
-            # The custom_objects dictionary is crucial for loading the model with custom layers.
             try:
                 model = tf.keras.models.load_model(
                     'transformer_forecaster.h5',
@@ -164,4 +194,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
