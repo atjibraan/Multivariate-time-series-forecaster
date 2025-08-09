@@ -4,7 +4,7 @@ import numpy as np
 import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import Layer, MultiHeadAttention
+from tensorflow.keras.layers import Layer
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -18,6 +18,7 @@ warnings.filterwarnings('ignore')
 st.sidebar.subheader("Environment Information")
 st.sidebar.write(f"Python version: {sys.version.split()[0]}")
 st.sidebar.write(f"TensorFlow version: {tf.__version__}")
+st.sidebar.write(f"Streamlit version: {st.__version__}")
 
 # Custom layer to handle TFOpLambda loading issue
 class TFOpLambda(Layer):
@@ -41,7 +42,7 @@ class TFOpLambda(Layer):
         return cls(**config)
 
 # Enhanced MultiHeadAttention layer with shape compatibility
-class CompatibleMultiHeadAttention(MultiHeadAttention):
+class CompatibleMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
     def __init__(self, **kwargs):
         # Remove problematic parameters that cause loading issues
         kwargs.pop('query_shape', None)
@@ -81,10 +82,8 @@ def load_model_with_fix(model_path):
         Common solutions:
         1. Ensure TensorFlow version is 2.13.1:
            pip install tensorflow==2.13.1
-        2. If using GPU, install compatible version:
-           pip install tensorflow-gpu==2.13.1
-        3. Re-train model with current environment:
-           python training_script.py
+        2. Verify Python version is 3.10.x
+        3. Check model was trained with TF 2.13.1
         """)
         st.stop()
 
@@ -101,19 +100,20 @@ def load_scaler(scaler_path):
 try:
     model = load_model_with_fix("transformer_forecaster.h5")
     scaler = load_scaler("scaler.pkl")
-    st.sidebar.success("Model and scaler loaded successfully!")
+    st.sidebar.success("✅ Model and scaler loaded successfully!")
 except Exception as e:
-    st.error(f"Initialization failed: {str(e)}")
+    st.error(f"❌ Initialization failed: {str(e)}")
     st.stop()
 
 # Preprocessing function
 @st.cache_data(show_spinner="Processing data...")
 def load_and_preprocess_data(uploaded_file):
     try:
+        # Read Excel file
         df = pd.read_excel(uploaded_file, header=0, skiprows=[1])
         
         # Clean column names
-        df.columns = [str(col).strip().replace(' ', '_') for col in df.columns]
+        df.columns = [str(col).strip().replace(' ', '_').replace('.', '_') for col in df.columns]
         
         # Handle missing values
         df.replace(-200, np.nan, inplace=True)
@@ -137,21 +137,32 @@ def load_and_preprocess_data(uploaded_file):
         df['month'] = df['timestamp'].dt.month
         
         # Define columns
-        target_cols = ['CO(GT)', 'PT08.S1(CO)', 'NMHC(GT)', 'C6H6(GT)']
+        target_cols = ['CO_GT_', 'PT08_S1_CO_', 'NMHC_GT_', 'C6H6_GT_']
         feature_cols = [
-            'CO(GT)', 'PT08.S1(CO)', 'NMHC(GT)', 'C6H6(GT)',
-            'PT08.S2(NMHC)', 'NOx(GT)', 'PT08.S3(NOx)', 'NO2(GT)',
-            'PT08.S4(NO2)', 'PT08.S5(O3)', 'T', 'RH', 'AH',
+            'CO_GT_', 'PT08_S1_CO_', 'NMHC_GT_', 'C6H6_GT_',
+            'PT08_S2_NMHC_', 'NOx_GT_', 'PT08_S3_NOx_', 'NO2_GT_',
+            'PT08_S4_NO2_', 'PT08_S5_O3_', 'T', 'RH', 'AH',
             'hour', 'day_of_week', 'month'
         ]
         
-        # Filter to existing columns
+        # Use cleaned column names
         feature_cols = [col for col in feature_cols if col in df.columns]
+        
+        # Handle original column names if cleaned versions not found
+        if len(feature_cols) == 0:
+            original_cols = [
+                'CO(GT)', 'PT08.S1(CO)', 'NMHC(GT)', 'C6H6(GT)',
+                'PT08.S2(NMHC)', 'NOx(GT)', 'PT08.S3(NOx)', 'NO2(GT)',
+                'PT08.S4(NO2)', 'PT08.S5(O3)', 'T', 'RH', 'AH',
+                'hour', 'day_of_week', 'month'
+            ]
+            feature_cols = [col for col in original_cols if col in df.columns]
+            target_cols = ['CO(GT)', 'PT08.S1(CO)', 'NMHC(GT)', 'C6H6(GT)']
         
         return df[['timestamp'] + feature_cols], target_cols, feature_cols
     
     except Exception as e:
-        st.error(f"Error processing data: {str(e)}")
+        st.error(f"❌ Error processing data: {str(e)}")
         st.stop()
 
 # Streamlit app
@@ -167,73 +178,79 @@ uploaded_file = st.file_uploader("Upload Air Quality Data (Excel format)", type=
 if uploaded_file is not None:
     try:
         # Preprocess data
-        df, target_cols, feature_cols = load_and_preprocess_data(uploaded_file)
-        
-        # Check data requirements
-        if len(df) < 24:
-            st.warning(f"Only {len(df)} hours of data available. Need at least 24 hours for forecasting.")
-            st.stop()
+        with st.spinner("🔍 Processing and validating data..."):
+            df, target_cols, feature_cols = load_and_preprocess_data(uploaded_file)
             
-        st.success(f"✅ Data loaded successfully: {len(df)} records with {len(feature_cols)} features")
-        
-        # Normalize features
-        scaled_data = scaler.transform(df[feature_cols])
-        
-        # Get last 24 hours of data
-        last_24 = scaled_data[-24:]
-        current_sequence = last_24.reshape(1, 24, len(feature_cols))
-        last_timestamp = df['timestamp'].iloc[-1]
-        
-        # Generate forecasts
-        forecasts = []
-        timestamps = []
-        
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for i in range(24):
-            # Update progress
-            progress = (i + 1) / 24
-            progress_bar.progress(progress)
-            status_text.text(f"⏳ Forecasting hour {i+1}/24...")
+            # Check data requirements
+            if len(df) < 24:
+                st.warning(f"⚠️ Only {len(df)} hours of data available. Need at least 24 hours for forecasting.")
+                st.stop()
+                
+            st.success(f"✅ Data loaded successfully: {len(df)} records with {len(feature_cols)} features")
             
-            # Predict next hour
-            pred = model.predict(current_sequence, verbose=0)[0]
+            # Normalize features
+            scaled_data = scaler.transform(df[feature_cols])
             
-            # Create new row with predictions
-            new_row = np.zeros(len(feature_cols))
-            new_row[:len(target_cols)] = pred  # Predicted targets
+            # Get last 24 hours of data
+            last_24 = scaled_data[-24:]
+            current_sequence = last_24.reshape(1, 24, len(feature_cols))
+            last_timestamp = df['timestamp'].iloc[-1]
             
-            # Carry forward other features
-            new_row[len(target_cols):] = current_sequence[0, -1, len(target_cols):]
+            # Generate forecasts
+            forecasts = []
+            timestamps = []
             
-            # Update time features for next hour
-            next_time = last_timestamp + timedelta(hours=i+1)
-            hour_idx = feature_cols.index('hour')
-            dow_idx = feature_cols.index('day_of_week')
-            month_idx = feature_cols.index('month')
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            new_row[hour_idx] = next_time.hour
-            new_row[dow_idx] = next_time.weekday()
-            new_row[month_idx] = next_time.month
+            for i in range(24):
+                # Update progress
+                progress = (i + 1) / 24
+                progress_bar.progress(progress)
+                status_text.text(f"⏳ Forecasting hour {i+1}/24...")
+                
+                # Predict next hour
+                pred = model.predict(current_sequence, verbose=0)[0]
+                
+                # Create new row with predictions
+                new_row = np.zeros(len(feature_cols))
+                new_row[:len(target_cols)] = pred  # Predicted targets
+                
+                # Carry forward other features
+                new_row[len(target_cols):] = current_sequence[0, -1, len(target_cols):]
+                
+                # Update time features for next hour
+                next_time = last_timestamp + timedelta(hours=i+1)
+                
+                # Find indices safely
+                hour_idx = feature_cols.index('hour') if 'hour' in feature_cols else None
+                dow_idx = feature_cols.index('day_of_week') if 'day_of_week' in feature_cols else None
+                month_idx = feature_cols.index('month') if 'month' in feature_cols else None
+                
+                if hour_idx is not None:
+                    new_row[hour_idx] = next_time.hour
+                if dow_idx is not None:
+                    new_row[dow_idx] = next_time.weekday()
+                if month_idx is not None:
+                    new_row[month_idx] = next_time.month
+                
+                # Update sequence
+                current_sequence = np.roll(current_sequence, -1, axis=1)
+                current_sequence[0, -1, :] = new_row
+                
+                # Store results
+                forecasts.append(new_row[:len(target_cols)])
+                timestamps.append(next_time)
             
-            # Update sequence
-            current_sequence = np.roll(current_sequence, -1, axis=1)
-            current_sequence[0, -1, :] = new_row
+            # Inverse transform predictions
+            forecast_array = np.array(forecasts)
+            dummy_features = np.zeros((24, len(feature_cols)))
+            dummy_features[:, :len(target_cols)] = forecast_array
+            predicted_values = scaler.inverse_transform(dummy_features)[:, :len(target_cols)]
             
-            # Store results
-            forecasts.append(new_row[:len(target_cols)])
-            timestamps.append(next_time)
-        
-        # Inverse transform predictions
-        forecast_array = np.array(forecasts)
-        dummy_features = np.zeros((24, len(feature_cols)))
-        dummy_features[:, :len(target_cols)] = forecast_array
-        predicted_values = scaler.inverse_transform(dummy_features)[:, :len(target_cols)]
-        
-        # Create results DataFrame
-        results = pd.DataFrame(predicted_values, columns=target_cols)
-        results.insert(0, 'Timestamp', timestamps)
+            # Create results DataFrame
+            results = pd.DataFrame(predicted_values, columns=target_cols)
+            results.insert(0, 'Timestamp', timestamps)
         
         # Display results
         st.success("🎉 Forecast generated successfully!")
@@ -248,7 +265,7 @@ if uploaded_file is not None:
         for i, col in enumerate(target_cols):
             ax = axes[i]
             ax.plot(results['Timestamp'], results[col], marker='o', linestyle='-', color='#1f77b4')
-            ax.set_title(f"{col} Forecast")
+            ax.set_title(f"{col}")
             ax.set_xlabel("Time")
             ax.set_ylabel("Value")
             ax.grid(True, alpha=0.3)
@@ -264,12 +281,6 @@ if uploaded_file is not None:
         history['Type'] = 'Historical'
         forecast = results.copy()
         forecast['Type'] = 'Forecast'
-        
-        # Combine data
-        combined = pd.concat([
-            history.rename(columns={'timestamp': 'Timestamp'}),
-            forecast
-        ])
         
         # Plot comparison
         fig2, axes2 = plt.subplots(2, 2, figsize=(12, 8))
@@ -320,12 +331,12 @@ st.sidebar.title("Instructions")
 st.sidebar.markdown("""
 1. **Upload Data**:
    - Excel file with air quality measurements
-   - Same format as AirQualityUCI.xlsx
+   - Should include Date and Time columns
+   - Same sensor columns as original dataset
 
 2. **Data Requirements**:
    - Must contain at least 24 hours of data
-   - Should include Date and Time columns
-   - Same sensor columns as original dataset
+   - Missing values will be interpolated
 
 3. **Output**:
    - 24-hour forecast for key pollutants
@@ -334,10 +345,8 @@ st.sidebar.markdown("""
 """)
 st.sidebar.title("Troubleshooting")
 st.sidebar.markdown("""
-**MultiHeadAttention Fix**:
-```bash
-# Install compatible TensorFlow version
-pip install tensorflow==2.13.1
+**Common Issues**:
+- Column name mismatch: App automatically handles original and cleaned names
+- Date format issues: Use YYYY-MM-DD format
+- Model loading errors: Verify TensorFlow version is 2.13.1
 
-# Or for GPU support:
-pip install tensorflow-gpu==2.13.1
