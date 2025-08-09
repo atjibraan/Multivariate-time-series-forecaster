@@ -4,6 +4,7 @@ import numpy as np
 import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
+from tensorflow.keras.layers import Layer, InputSpec
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -18,10 +19,31 @@ st.sidebar.subheader("Environment Information")
 st.sidebar.write(f"Python version: {sys.version}")
 st.sidebar.write(f"TensorFlow version: {tf.__version__}")
 
-# Define custom MultiHeadAttention layer to handle loading issues
+# Custom layer to handle TFOpLambda loading issue
+class TFOpLambda(Layer):
+    def __init__(self, function, **kwargs):
+        super().__init__(**kwargs)
+        self.function = function
+        self.supports_masking = True
+
+    def call(self, inputs, mask=None, **kwargs):
+        if mask is not None:
+            return self.function(inputs, mask=mask)
+        return self.function(inputs)
+
+    def get_config(self):
+        config = super().get_config()
+        config['function'] = self.function
+        return config
+
+    @classmethod
+    def from_config(cls, config):
+        return cls(**config)
+
+# Define custom MultiHeadAttention layer
 class FixedMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
     def __init__(self, **kwargs):
-        # Remove problematic parameters that might cause loading issues
+        # Remove problematic parameters
         kwargs.pop('query_shape', None)
         kwargs.pop('key_shape', None)
         kwargs.pop('value_shape', None)
@@ -31,13 +53,16 @@ class FixedMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
 @st.cache_resource(show_spinner="Loading forecasting model...")
 def load_model_with_fix(model_path):
     try:
-        return load_model(
-            model_path,
-            custom_objects={'MultiHeadAttention': FixedMultiHeadAttention},
-            compile=False
-        )
+        custom_objects = {
+            'TFOpLambda': TFOpLambda,
+            'MultiHeadAttention': FixedMultiHeadAttention,
+            'tf': tf
+        }
+        return load_model(model_path, custom_objects=custom_objects, compile=False)
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
+        st.error("This error is often caused by TensorFlow version incompatibility.")
+        st.error("Try: pip install --upgrade tensorflow==2.13.1")
         st.stop()
 
 # Load scaler
@@ -283,11 +308,9 @@ st.sidebar.markdown("""
    - Visual comparison with historical data
    - Downloadable CSV results
 """)
+st.sidebar.title("Troubleshooting")
 st.sidebar.markdown("""
-**Troubleshooting Tips**:
-- If you get loading errors, try:
-  - `pip install --upgrade tensorflow`
-  - `pip install --upgrade scikit-learn`
-- Ensure all required packages are installed
-- Check file format matches the training data
-""")
+If you encounter `TFOpLambda` errors:
+1. Ensure TensorFlow version matches:
+```bash
+pip install tensorflow==2.13.1
