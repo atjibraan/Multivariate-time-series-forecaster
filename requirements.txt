@@ -1,14 +1,15 @@
+
+
 pip>=25.2
 streamlit==1.37.0
-pandas==2.2.2
-scikit-learn==1.5.1
-numpy==1.26.4
 rich==13.7.1
-markdown-it-py==3.0.0
+pandas==2.2.2
+numpy==1.26.4
+scikit-learn==1.5.1
+tensorflow==2.13.1
+matplotlib==3.9.2
 mdurl==0.1.2
 pygments==2.19.1
-tensorflow==2.13.1
-
 
 
 
