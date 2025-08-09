@@ -310,5 +310,7 @@ st.sidebar.markdown("""
 """)
 st.sidebar.title("Troubleshooting")
 st.sidebar.markdown("""
-
-
+If you encounter `TFOpLambda` errors:
+1. Ensure TensorFlow version matches:
+```bash
+pip install tensorflow==2.13.1
