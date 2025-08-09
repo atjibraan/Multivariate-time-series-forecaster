@@ -1,9 +1,7 @@
-streamlit>=1.43.2
-rich<14,>=10.14.0
+streamlit==1.36.0
 tensorflow==2.13.1
-joblib
 pandas
 numpy
 openpyxl
-matplotlib
-scikit-learn
+rich==14.1.0
+
