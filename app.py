@@ -4,7 +4,7 @@ import numpy as np
 import joblib
 import tensorflow as tf
 from tensorflow.keras.models import load_model
-from tensorflow.keras.layers import Layer, InputSpec
+from tensorflow.keras.layers import Layer, MultiHeadAttention
 from sklearn.preprocessing import MinMaxScaler
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
@@ -16,7 +16,7 @@ warnings.filterwarnings('ignore')
 
 # Display environment info
 st.sidebar.subheader("Environment Information")
-st.sidebar.write(f"Python version: {sys.version}")
+st.sidebar.write(f"Python version: {sys.version.split()[0]}")
 st.sidebar.write(f"TensorFlow version: {tf.__version__}")
 
 # Custom layer to handle TFOpLambda loading issue
@@ -40,14 +40,26 @@ class TFOpLambda(Layer):
     def from_config(cls, config):
         return cls(**config)
 
-# Define custom MultiHeadAttention layer
-class FixedMultiHeadAttention(tf.keras.layers.MultiHeadAttention):
+# Enhanced MultiHeadAttention layer with shape compatibility
+class CompatibleMultiHeadAttention(MultiHeadAttention):
     def __init__(self, **kwargs):
-        # Remove problematic parameters
+        # Remove problematic parameters that cause loading issues
         kwargs.pop('query_shape', None)
         kwargs.pop('key_shape', None)
         kwargs.pop('value_shape', None)
         super().__init__(**kwargs)
+        
+    def build(self, input_shape):
+        # Handle different input shape formats
+        if isinstance(input_shape, list):
+            # Handle list input (query, value, key)
+            query_shape = input_shape[0]
+            value_shape = input_shape[1] if len(input_shape) > 1 else query_shape
+            key_shape = input_shape[2] if len(input_shape) > 2 else value_shape
+            super().build([query_shape, value_shape, key_shape])
+        else:
+            # Handle single tensor input
+            super().build(input_shape)
 
 # Load model with custom objects
 @st.cache_resource(show_spinner="Loading forecasting model...")
@@ -55,14 +67,25 @@ def load_model_with_fix(model_path):
     try:
         custom_objects = {
             'TFOpLambda': TFOpLambda,
-            'MultiHeadAttention': FixedMultiHeadAttention,
+            'MultiHeadAttention': CompatibleMultiHeadAttention,
             'tf': tf
         }
-        return load_model(model_path, custom_objects=custom_objects, compile=False)
+        return load_model(
+            model_path,
+            custom_objects=custom_objects,
+            compile=False
+        )
     except Exception as e:
         st.error(f"Error loading model: {str(e)}")
-        st.error("This error is often caused by TensorFlow version incompatibility.")
-        st.error("Try: pip install --upgrade tensorflow==2.13.1")
+        st.error("""
+        Common solutions:
+        1. Ensure TensorFlow version is 2.13.1:
+           pip install tensorflow==2.13.1
+        2. If using GPU, install compatible version:
+           pip install tensorflow-gpu==2.13.1
+        3. Re-train model with current environment:
+           python training_script.py
+        """)
         st.stop()
 
 # Load scaler
@@ -78,6 +101,7 @@ def load_scaler(scaler_path):
 try:
     model = load_model_with_fix("transformer_forecaster.h5")
     scaler = load_scaler("scaler.pkl")
+    st.sidebar.success("Model and scaler loaded successfully!")
 except Exception as e:
     st.error(f"Initialization failed: {str(e)}")
     st.stop()
@@ -131,9 +155,9 @@ def load_and_preprocess_data(uploaded_file):
         st.stop()
 
 # Streamlit app
-st.title("Air Quality Forecasting")
+st.title("🌤️ Air Quality Forecasting")
 st.markdown("""
-This app forecasts air quality parameters for the next 24 hours using a Transformer model.
+Forecast air quality parameters for the next 24 hours using a Transformer model.
 Upload recent air quality data in Excel format to get predictions.
 """)
 
@@ -150,7 +174,7 @@ if uploaded_file is not None:
             st.warning(f"Only {len(df)} hours of data available. Need at least 24 hours for forecasting.")
             st.stop()
             
-        st.success(f"Data loaded successfully: {len(df)} records with {len(feature_cols)} features")
+        st.success(f"✅ Data loaded successfully: {len(df)} records with {len(feature_cols)} features")
         
         # Normalize features
         scaled_data = scaler.transform(df[feature_cols])
@@ -171,7 +195,7 @@ if uploaded_file is not None:
             # Update progress
             progress = (i + 1) / 24
             progress_bar.progress(progress)
-            status_text.text(f"Forecasting hour {i+1}/24...")
+            status_text.text(f"⏳ Forecasting hour {i+1}/24...")
             
             # Predict next hour
             pred = model.predict(current_sequence, verbose=0)[0]
@@ -212,9 +236,9 @@ if uploaded_file is not None:
         results.insert(0, 'Timestamp', timestamps)
         
         # Display results
-        st.success("Forecast generated successfully!")
+        st.success("🎉 Forecast generated successfully!")
         st.subheader("Next 24 Hours Forecast")
-        st.dataframe(results.style.format(subset=target_cols, formatter="{:.2f}"))
+        st.dataframe(results.style.format(subset=target_cols, formatter="{:.2f}"), height=400)
         
         # Plot results
         st.subheader("Forecast Visualization")
@@ -277,7 +301,7 @@ if uploaded_file is not None:
         # Download button
         csv = results.to_csv(index=False).encode('utf-8')
         st.download_button(
-            label="Download Forecast as CSV",
+            label="📥 Download Forecast as CSV",
             data=csv,
             file_name='air_quality_forecast.csv',
             mime='text/csv',
@@ -285,11 +309,11 @@ if uploaded_file is not None:
         )
     
     except Exception as e:
-        st.error(f"Error generating forecast: {str(e)}")
+        st.error(f"❌ Error generating forecast: {str(e)}")
         st.stop()
 
 else:
-    st.info("Please upload an Excel file to generate forecasts")
+    st.info("ℹ️ Please upload an Excel file to generate forecasts")
 
 # Instructions in sidebar
 st.sidebar.title("Instructions")
@@ -308,3 +332,12 @@ st.sidebar.markdown("""
    - Visual comparison with historical data
    - Downloadable CSV results
 """)
+st.sidebar.title("Troubleshooting")
+st.sidebar.markdown("""
+**MultiHeadAttention Fix**:
+```bash
+# Install compatible TensorFlow version
+pip install tensorflow==2.13.1
+
+# Or for GPU support:
+pip install tensorflow-gpu==2.13.1
