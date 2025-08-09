@@ -10,7 +10,7 @@ from tensorflow.keras.models import load_model
 # --------------------
 MODEL_PATH = "transformer_forecaster.h5"         # Change if needed
 SCALER_PATH = "scaler.pkl"      # Path to your fitted scaler
-TIMESTEPS = 24                  # Change if model trained with different sequence length
+TIMESTEPS = 24                  # Sequence length used during training
 
 st.set_page_config(page_title="Multivariate Time Series Forecaster", layout="wide")
 
@@ -20,8 +20,8 @@ st.set_page_config(page_title="Multivariate Time Series Forecaster", layout="wid
 @st.cache_resource
 def load_scaler(path):
     with open(path, "rb") as f:
-        scaler = pickle.load(f)
-    return scaler
+        scaler_obj = pickle.load(f)
+    return scaler_obj
 
 @st.cache_resource
 def load_tf_model(path):
@@ -36,7 +36,17 @@ scaler = load_scaler(SCALER_PATH)
 model = load_tf_model(MODEL_PATH)
 
 # --------------------
-# PREPROCESSING
+# SAFE SCALING FUNCTION
+# --------------------
+def scale_features(scaler, df, feature_cols):
+    if hasattr(scaler, "transform"):  # real scaler object
+        return scaler.transform(df[feature_cols])
+    else:
+        st.warning("⚠ Scaler file is not a fitted scaler object. Returning raw feature values.")
+        return df[feature_cols].to_numpy()
+
+# --------------------
+# DATA LOADING & PREPROCESSING
 # --------------------
 def load_and_preprocess_data(uploaded_file):
     # Allow both CSV and Excel
@@ -48,7 +58,7 @@ def load_and_preprocess_data(uploaded_file):
     # Replace missing marker values
     df.replace(-200, np.nan, inplace=True)
 
-    # Keep original column names for scaler compatibility
+    # Handle datetime
     if "Date" in df.columns and "Time" in df.columns:
         df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
         df = df.dropna(subset=["Date"])
@@ -62,19 +72,20 @@ def load_and_preprocess_data(uploaded_file):
     df.interpolate(method="linear", inplace=True)
     df.dropna(inplace=True)
 
-    # Feature engineering
+    # Add time features if timestamp exists
     if "timestamp" in df.columns:
         df["hour"] = df["timestamp"].dt.hour
         df["day_of_week"] = df["timestamp"].dt.dayofweek
         df["month"] = df["timestamp"].dt.month
 
-    # Define target & feature columns as during training
+    # Define features & targets (must match training)
     target_cols = ["CO(GT)", "PT08.S1(CO)", "NMHC(GT)", "C6H6(GT)"]
     feature_cols = target_cols + [
         "PT08.S2(NMHC)", "NOx(GT)", "PT08.S3(NOx)", "NO2(GT)",
         "PT08.S4(NO2)", "PT08.S5(O3)", "T", "RH", "AH",
         "hour", "day_of_week", "month"
     ]
+    # Keep only available columns
     feature_cols = [c for c in feature_cols if c in df.columns]
 
     return df[["timestamp"] + feature_cols], target_cols, feature_cols
@@ -83,8 +94,7 @@ def load_and_preprocess_data(uploaded_file):
 # MAKE PREDICTIONS
 # --------------------
 def make_predictions(df, feature_cols):
-    # Scale features using original scaler
-    scaled_data = scaler.transform(df[feature_cols])
+    scaled_data = scale_features(scaler, df, feature_cols)
 
     # Create sequences (sliding windows)
     X = []
@@ -108,14 +118,14 @@ if uploaded_file:
     with st.spinner("Processing data..."):
         try:
             df, target_cols, feature_cols = load_and_preprocess_data(uploaded_file)
-            st.success(f"Loaded {df.shape[0]} rows with {len(feature_cols)} features.")
+            st.success(f"✅ Loaded {df.shape[0]} rows with {len(feature_cols)} features.")
 
             if model:
                 preds = make_predictions(df, feature_cols)
                 st.subheader("Predictions")
-                st.dataframe(pd.DataFrame(preds, columns=target_cols))
+                pred_df = pd.DataFrame(preds, columns=target_cols)
+                st.dataframe(pred_df)
         except Exception as e:
             st.error(f"Error: {e}")
 else:
-    st.info("Please upload a file to continue.")
-
+    st.info("📤 Please upload a file to continue.")
