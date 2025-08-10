@@ -3,7 +3,7 @@
 
 This project is a **machine learning web app** built with **TensorFlow/Keras** and **Gradio** that predicts multiple air pollutant concentrations from 24 hours of environmental sensor readings.  
 The model is based on the [UCI Air Quality dataset](https://archive.ics.uci.edu/dataset/360/air+quality).
-Access the web app through [https://huggingface.co/spaces/AJibraan/MVt](url)
+Access the web app through [https://huggingface.co/spaces/AJibraan/MVt](
 
 ---
 
