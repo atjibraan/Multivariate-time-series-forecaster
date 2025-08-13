@@ -109,7 +109,7 @@ def make_predictions(df, feature_cols):
 # --------------------
 # STREAMLIT UI
 # --------------------
-st.title("📈 Multivariate Time Series Forecaster")
+st.title("📈 Multivariate Time Series Forecasting for Pollutants and predicting the next hours pollutants content")
 st.markdown("Upload your dataset (CSV or Excel) to forecast future values.")
 
 uploaded_file = st.file_uploader("Upload file", type=["csv", "xlsx", "xls"])
